@@ -2,7 +2,10 @@ mod http;
 
 #[allow(unused_imports)]
 use std::net::TcpListener;
-use std::{io::Write, net::TcpStream};
+use std::{
+    io::{BufReader, Write},
+    net::TcpStream,
+};
 
 use log::error;
 
@@ -27,7 +30,9 @@ fn main() {
 
 fn handle_connection(mut stream: TcpStream) {
     log::info!("accepted new connection");
-    let response = match Request::try_read_new(&mut stream) {
+    let buf_reader = BufReader::new(&mut stream);
+
+    let response = match Request::try_from(buf_reader) {
         Ok(request) => request.make_response(),
         Err(err) => err,
     };

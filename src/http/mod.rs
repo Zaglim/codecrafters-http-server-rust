@@ -1,3 +1,6 @@
+use core::str;
+use std::fmt::Display;
+
 use log::error;
 
 pub mod request;
@@ -11,19 +14,19 @@ pub enum Method {
 }
 
 impl TryFrom<&'_ [u8]> for Method {
-    type Error = ();
+    type Error = String;
 
-    fn try_from(value: &'_ [u8]) -> Result<Self, ()> {
+    fn try_from(value: &'_ [u8]) -> Result<Self, String> {
         match value {
             b"GET" => Ok(Self::Get),
             b"POST" => Ok(Self::Post),
             b"PUT" => Ok(Self::Put),
             bytes => {
-                error!(
+                let error = format!(
                     "\"{}\" is not a recognised method",
                     String::from_utf8_lossy(bytes)
                 );
-                Err(())
+                Err(error)
             }
         }
     }
@@ -45,40 +48,41 @@ impl Version {
 }
 
 impl<'a> TryFrom<&'a [u8]> for Version {
-    type Error = ();
+    type Error = String;
 
     fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
         match value {
             b"HTTP/1.1" => Ok(Self::Ver1_1),
             b"HTTP/2.0" => Ok(Self::Ver2_0),
             bytes => {
-                error!(
-                    "\"{}\" is not a recognised version",
+                let e = format!(
+                    "\"{}\" is not a recognised HTTP version",
                     String::from_utf8_lossy(bytes)
                 );
-                Err(())
+                error!("{e}");
+                Err(e)
             }
         }
     }
 }
 
 pub struct Header {
-    key: Box<[u8]>,
-    value: Box<[u8]>,
+    key: Box<str>,
+    value: Box<str>,
 }
 
 impl TryFrom<Vec<u8>> for Header {
-    type Error = ();
+    type Error = String;
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
-        let split_pos = bytes.windows(2).position(|b| b == b": ").ok_or(())?;
-        let key = &bytes[..split_pos];
-        let value = &bytes[split_pos + 2..];
+        let split_pos = bytes
+            .windows(2)
+            .position(|b| b == b": ")
+            .ok_or("expecting key and value seperated by \": \"")?;
+        let key: Box<str> = String::from_utf8_lossy(&bytes[..split_pos]).into();
+        let value: Box<str> = String::from_utf8_lossy(&bytes[split_pos + 2..]).into();
 
-        Ok(Header {
-            key: key.into(),
-            value: value.into(),
-        })
+        Ok(Header { key, value })
     }
 }
 
@@ -118,9 +122,14 @@ impl Default for Response {
 }
 
 impl Response {
-    pub fn new_bad_request() -> Response {
+    pub fn bad_request(cause: impl Display) -> Response {
         Response {
             status: ResponseStatus::BadRequest,
+            headers: [Header {
+                key: "cause".into(),
+                value: cause.to_string().into(),
+            }]
+            .into(),
             ..Default::default()
         }
     }
@@ -148,9 +157,9 @@ impl Response {
 
         // headers
         for header in headers {
-            vec.extend(&header.key);
+            vec.extend(header.key.bytes());
             vec.extend(b": ");
-            vec.extend(&header.value);
+            vec.extend(header.value.bytes());
             vec.extend(b"\r\n");
         }
         // signal end of headers

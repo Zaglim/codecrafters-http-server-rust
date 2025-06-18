@@ -1,5 +1,5 @@
 use std::{
-    io::{self, BufRead, Read},
+    io::{self, BufRead, BufReader},
     net::TcpStream,
 };
 
@@ -13,37 +13,6 @@ pub struct Request {
     _body: Box<[u8]>,
 }
 impl Request {
-    /// TODO try replace with stream.bytes() implementation? (To process as it is coming in)
-    pub fn try_read_new<'a>(stream: &mut TcpStream) -> Result<Request, Response> {
-        let bytes = {
-            let mut vec = Vec::new();
-            let mut buffer = [0; 1024];
-
-            // Read until we find the end of headers (\r\n\r\n)
-            loop {
-                let bytes_read = stream.read(&mut buffer).map_err(|e| {
-                    eprintln!("{e}");
-                    Response::new_bad_request()
-                })?;
-
-                if bytes_read == 0 {
-                    break; // Connection closed
-                }
-
-                vec.extend(&buffer[..bytes_read]);
-
-                if vec.windows(4).any(|window| window == b"\r\n\r\n") {
-                    // reached the end of headers.
-                    // todo: Once bodies become a thing in the codecrafters challenge, then this will cause an issue
-                    break;
-                }
-            }
-
-            vec
-        };
-        Request::try_from(bytes.as_slice())
-    }
-
     pub fn make_response(&self) -> Response {
         match self.method {
             Method::Get => handle_get(self),
@@ -65,41 +34,44 @@ fn handle_get(request: &Request) -> Response {
     }
 }
 
-impl<'a> TryFrom<&'a [u8]> for Request {
+impl TryFrom<BufReader<&mut TcpStream>> for Request {
     type Error = Response;
 
-    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
-        let mut sbb = split_by_bytes(value, *b"\r\n");
+    fn try_from(buf: BufReader<&mut TcpStream>) -> Result<Request, Response> {
+        let mut sbb = split_by_bytes(buf, *b"\r\n");
         let request_line = match sbb.next() {
             Some(Ok(bytes)) => bytes,
             Some(Err(e)) => {
                 eprintln!("{e}");
                 return Err(Response::new_server_error());
             }
-            None => return Err(Response::new_bad_request()),
+            None => return Err(Response::bad_request("missing HTTP request line")),
         };
 
         let mut request_line_split = request_line.split(|b| *b == b' ');
 
         let method: Method = request_line_split
             .next()
-            .ok_or(Response::new_bad_request())? // no method given
+            .ok_or(Response::bad_request("missing HTTP method"))? // no method given
             .try_into()
-            .map_err(|_| Response::new_bad_request())?;
+            .map_err(Response::bad_request)?;
 
         let target: Box<[u8]> = request_line_split
             .next()
-            .ok_or(Response::new_bad_request())? // no target given
+            .ok_or(Response::bad_request("missing HTTP target URL"))? // no target given
             .into();
 
         let http_version: Version = request_line_split
             .next()
-            .ok_or(Response::new_bad_request())?
+            .ok_or(Response::bad_request("missing HTTP version"))? // no version given
             .try_into()
-            .map_err(|_| Response::new_bad_request())?;
+            .map_err(Response::bad_request)?;
 
-        if request_line_split.next().is_some() {
-            return Err(Response::new_bad_request());
+        if let Some(bad) = request_line_split.next() {
+            return Err(Response::bad_request(format!(
+                "expected \\r\\n, found {}",
+                String::from_utf8_lossy(bad)
+            )));
         }
 
         let mut headers = Vec::new();
@@ -107,13 +79,13 @@ impl<'a> TryFrom<&'a [u8]> for Request {
             match sbb.next() {
                 Some(Ok(bytes)) if bytes.is_empty() => break, // found \r\n\r\n
                 Some(Ok(bytes)) => {
-                    headers.push(Header::try_from(bytes).map_err(|_| Response::new_bad_request())?);
+                    headers.push(Header::try_from(bytes).map_err(Response::bad_request)?);
                 }
                 Some(Err(io_error)) => {
                     eprintln!("{io_error}");
                     return Err(Response::new_server_error());
                 }
-                None => return Err(Response::new_bad_request()),
+                None => return Err(Response::bad_request("")),
             };
         }
         let headers = headers.into_boxed_slice();
@@ -130,12 +102,7 @@ impl<'a> TryFrom<&'a [u8]> for Request {
     }
 }
 
-/// An iterator over the lines of an instance of `BufRead`.
-///
-/// This struct is generally created by calling [`lines`] on a `BufRead`.
-/// Please see the documentation of [`lines`] for more details.
-///
-/// [`lines`]: BufRead::lines
+/// An iterator over an instance of `BufRead` seperated by a given multi-byte delimiter
 struct SplitByBytes<B, const N: usize> {
     buf: B,
     delimiter: [u8; N],
