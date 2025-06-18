@@ -1,9 +1,14 @@
+mod http;
+
 #[allow(unused_imports)]
 use std::net::TcpListener;
 use std::{io::Write, net::TcpStream};
 
+use log::error;
+
+use crate::http::request::Request;
+
 fn main() {
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
     log::info!("Logs from your program will appear here!");
 
     let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
@@ -14,7 +19,7 @@ fn main() {
                 handle_connection(stream);
             }
             Err(e) => {
-                log::error!("connection failed: {}", e);
+                error!("connection failed: {}", e);
             }
         }
     }
@@ -22,7 +27,16 @@ fn main() {
 
 fn handle_connection(mut stream: TcpStream) {
     log::info!("accepted new connection");
-    stream
-        .write_all("HTTP/1.1 200 OK\r\n\r\n".as_bytes())
-        .unwrap_or_else(|e| eprintln!("{e}"));
+    let response = match Request::try_read_new(&mut stream) {
+        Ok(request) => request.make_response(),
+        Err(err) => err,
+    };
+
+    let buf = &response.serialize();
+    dbg!(String::from_utf8_lossy(buf));
+    match stream.write_all(buf) {
+        Ok(_) => (), // sucessfull write
+        Err(io_error) => eprintln!("{io_error}"),
+    };
+    stream.flush().unwrap();
 }
