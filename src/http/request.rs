@@ -5,6 +5,7 @@ use std::{
 
 use crate::http::*;
 
+#[derive(Debug)]
 pub struct Request {
     method: Method,
     target: Box<[u8]>,
@@ -25,12 +26,33 @@ impl Request {
 fn handle_get(request: &Request) -> Response {
     debug_assert_eq!(request.method, Method::Get);
 
-    match request.target.as_ref() {
-        b"/" => Response::default(),
-        _ => Response {
-            status: ResponseStatus::NotFound,
-            ..Default::default()
-        },
+    dbg!(&request);
+
+    let mut delimited = request.target.splitn(3, |c| *c == b'/');
+
+    // first in iterator should be "" because target should start with '/'
+    match delimited.next() {
+        Some(b"") => {}
+        Some(not_empty) => {
+            return Response::bad_request(format!(
+                "malformed taget: {}",
+                String::from_utf8_lossy(not_empty)
+            ));
+        }
+        None => return Response::bad_request("empty target value"),
+    }
+
+    let first = delimited.next().unwrap_or(b"");
+    let remainder = delimited.next().unwrap_or(b"");
+    match first {
+        b"" => return Response::default(),
+        b"echo" => return Response::echo(remainder),
+        _other => {
+            return Response {
+                status: ResponseStatus::NotFound,
+                ..Default::default()
+            }
+        }
     }
 }
 
@@ -42,50 +64,28 @@ impl TryFrom<BufReader<&mut TcpStream>> for Request {
         let request_line = match sbb.next() {
             Some(Ok(bytes)) => bytes,
             Some(Err(e)) => {
-                eprintln!("{e}");
+                error!("{e}");
                 return Err(Response::new_server_error());
             }
             None => return Err(Response::bad_request("missing HTTP request line")),
         };
 
-        let mut request_line_split = request_line.split(|b| *b == b' ');
-
-        let method: Method = request_line_split
-            .next()
-            .ok_or(Response::bad_request("missing HTTP method"))? // no method given
-            .try_into()
-            .map_err(Response::bad_request)?;
-
-        let target: Box<[u8]> = request_line_split
-            .next()
-            .ok_or(Response::bad_request("missing HTTP target URL"))? // no target given
-            .into();
-
-        let http_version: Version = request_line_split
-            .next()
-            .ok_or(Response::bad_request("missing HTTP version"))? // no version given
-            .try_into()
-            .map_err(Response::bad_request)?;
-
-        if let Some(bad) = request_line_split.next() {
-            return Err(Response::bad_request(format!(
-                "expected \\r\\n, found {}",
-                String::from_utf8_lossy(bad)
-            )));
-        }
+        let (method, target, http_version) = parse_request_line(request_line)?;
 
         let mut headers = Vec::new();
         loop {
-            match sbb.next() {
-                Some(Ok(bytes)) if bytes.is_empty() => break, // found \r\n\r\n
-                Some(Ok(bytes)) => {
+            match sbb
+                .next()
+                .expect("TcpStream can't return None unless stream is closed")
+            {
+                Ok(bytes) if bytes.is_empty() => break, // found \r\n\r\n (marking end of headers)
+                Ok(bytes) => {
                     headers.push(Header::try_from(bytes).map_err(Response::bad_request)?);
                 }
-                Some(Err(io_error)) => {
+                Err(io_error) => {
                     eprintln!("{io_error}");
                     return Err(Response::new_server_error());
                 }
-                None => return Err(Response::bad_request("")),
             };
         }
         let headers = headers.into_boxed_slice();
@@ -100,6 +100,31 @@ impl TryFrom<BufReader<&mut TcpStream>> for Request {
             _body: body,
         })
     }
+}
+
+fn parse_request_line(request_line: Vec<u8>) -> Result<(Method, Box<[u8]>, Version), Response> {
+    let mut request_line_split = request_line.split(|b| *b == b' ');
+    let method: Method = request_line_split
+        .next()
+        .ok_or(Response::bad_request("missing HTTP method"))? // no method given
+        .try_into()
+        .map_err(Response::bad_request)?;
+    let target: Box<[u8]> = request_line_split
+        .next()
+        .ok_or(Response::bad_request("missing HTTP target URL"))? // no target given
+        .into();
+    let http_version: Version = request_line_split
+        .next()
+        .ok_or(Response::bad_request("missing HTTP version"))? // no version given
+        .try_into()
+        .map_err(Response::bad_request)?;
+    if let Some(bad) = request_line_split.next() {
+        return Err(Response::bad_request(format!(
+            "expected \\r\\n, found {}",
+            String::from_utf8_lossy(bad)
+        )));
+    }
+    Ok((method, target, http_version))
 }
 
 /// An iterator over an instance of `BufRead` seperated by a given multi-byte delimiter

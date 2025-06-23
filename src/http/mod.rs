@@ -32,6 +32,7 @@ impl TryFrom<&'_ [u8]> for Method {
     }
 }
 
+#[derive(Debug)]
 pub enum Version {
     // ..
     Ver1_1,
@@ -65,7 +66,7 @@ impl<'a> TryFrom<&'a [u8]> for Version {
         }
     }
 }
-
+#[derive(Debug)]
 pub struct Header {
     key: Box<str>,
     value: Box<str>,
@@ -166,5 +167,25 @@ impl Response {
         vec.extend(b"\r\n");
         vec.extend(body);
         vec
+    }
+
+    fn echo(str: &[u8]) -> Response {
+        let headers = Vec::from_iter([
+            Header {
+                key: "Content-Type".into(),
+                value: "text/plain".into(),
+            },
+            Header {
+                key: "Content-Length".into(),
+                value: str.len().to_string().into(),
+            },
+        ]);
+        let body = str.to_vec();
+
+        Response {
+            headers,
+            body,
+            ..Default::default()
+        }
     }
 }
