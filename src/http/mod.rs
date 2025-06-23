@@ -141,6 +141,13 @@ impl Response {
         }
     }
 
+    pub fn not_found() -> Response {
+        Response {
+            status: ResponseStatus::NotFound,
+            ..Default::default()
+        }
+    }
+
     pub fn serialize(&self) -> Vec<u8> {
         let Response {
             version,

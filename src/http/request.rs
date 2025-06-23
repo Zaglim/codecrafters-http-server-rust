@@ -1,7 +1,10 @@
 use std::{
+    collections::HashMap,
     io::{self, BufRead, BufReader},
     net::TcpStream,
 };
+
+use log::trace;
 
 use crate::http::*;
 
@@ -10,7 +13,7 @@ pub struct Request {
     method: Method,
     target: Box<[u8]>,
     _http_version: Version,
-    _headers: Box<[Header]>,
+    _headers: HashMap<Box<str>, Box<str>>,
     _body: Box<[u8]>,
 }
 impl Request {
@@ -26,13 +29,13 @@ impl Request {
 fn handle_get(request: &Request) -> Response {
     debug_assert_eq!(request.method, Method::Get);
 
-    dbg!(&request);
+    trace!("received request {request:?}");
 
     let mut delimited = request.target.splitn(3, |c| *c == b'/');
 
     // first in iterator should be "" because target should start with '/'
     match delimited.next() {
-        Some(b"") => {}
+        Some(b"") => {} // proceed
         Some(not_empty) => {
             return Response::bad_request(format!(
                 "malformed taget: {}",
@@ -46,13 +49,14 @@ fn handle_get(request: &Request) -> Response {
     let remainder = delimited.next().unwrap_or(b"");
     match endpoint {
         b"" => return Response::default(),
-        b"echo" | b"user-agent" => return Response::echo(remainder),
-        _other => {
-            return Response {
-                status: ResponseStatus::NotFound,
-                ..Default::default()
-            }
+        b"echo" => return Response::echo(remainder),
+        b"user-agent" if remainder.is_empty() => {
+            let Some(user_agent) = request._headers.get("User-Agent") else {
+                return Response::bad_request("no user agent");
+            };
+            Response::echo(user_agent.as_bytes())
         }
+        _other => return Response::not_found(),
     }
 }
 
@@ -72,7 +76,7 @@ impl TryFrom<BufReader<&mut TcpStream>> for Request {
 
         let (method, target, http_version) = parse_request_line(request_line)?;
 
-        let mut headers = Vec::new();
+        let mut headers = HashMap::new();
         loop {
             match sbb
                 .next()
@@ -80,7 +84,9 @@ impl TryFrom<BufReader<&mut TcpStream>> for Request {
             {
                 Ok(bytes) if bytes.is_empty() => break, // found \r\n\r\n (marking end of headers)
                 Ok(bytes) => {
-                    headers.push(Header::try_from(bytes).map_err(Response::bad_request)?);
+                    let Header { key, value } =
+                        Header::try_from(bytes).map_err(Response::bad_request)?;
+                    headers.insert(key, value);
                 }
                 Err(io_error) => {
                     eprintln!("{io_error}");
@@ -88,7 +94,7 @@ impl TryFrom<BufReader<&mut TcpStream>> for Request {
                 }
             };
         }
-        let headers = headers.into_boxed_slice();
+
         // let body = sbb.inn
         let body = Box::new([]);
 

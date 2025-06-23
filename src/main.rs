@@ -7,7 +7,7 @@ use std::{
     net::TcpStream,
 };
 
-use log::error;
+use log::{error, trace};
 
 use crate::http::request::Request;
 
@@ -38,10 +38,11 @@ fn handle_connection(mut stream: TcpStream) {
     };
 
     let buf = &response.serialize();
-    dbg!(String::from_utf8_lossy(buf));
+    trace!("sending response: {}", String::from_utf8_lossy(buf));
     match stream.write_all(buf) {
         Ok(_) => (), // sucessfull write
         Err(io_error) => eprintln!("{io_error}"),
     };
     stream.flush().unwrap();
+    trace!("response sent");
 }
