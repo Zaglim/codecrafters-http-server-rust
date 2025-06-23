@@ -42,11 +42,11 @@ fn handle_get(request: &Request) -> Response {
         None => return Response::bad_request("empty target value"),
     }
 
-    let first = delimited.next().unwrap_or(b"");
+    let endpoint = delimited.next().unwrap_or(b"");
     let remainder = delimited.next().unwrap_or(b"");
-    match first {
+    match endpoint {
         b"" => return Response::default(),
-        b"echo" => return Response::echo(remainder),
+        b"echo" | b"user-agent" => return Response::echo(remainder),
         _other => {
             return Response {
                 status: ResponseStatus::NotFound,
