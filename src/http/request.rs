@@ -6,7 +6,7 @@ use std::{
 
 use log::trace;
 
-use crate::http::*;
+use crate::http::{response::Response, *};
 
 #[derive(Debug)]
 pub struct Request {
@@ -48,15 +48,15 @@ fn handle_get(request: &Request) -> Response {
     let endpoint = delimited.next().unwrap_or(b"");
     let remainder = delimited.next().unwrap_or(b"");
     match endpoint {
-        b"" => return Response::default(),
-        b"echo" => return Response::echo(remainder),
+        b"" => Response::default(),
+        b"echo" => Response::echo(remainder),
         b"user-agent" if remainder.is_empty() => {
             let Some(user_agent) = request._headers.get("User-Agent") else {
                 return Response::bad_request("no user agent");
             };
             Response::echo(user_agent.as_bytes())
         }
-        _other => return Response::not_found(),
+        _other => Response::not_found(),
     }
 }
 
@@ -114,7 +114,7 @@ fn parse_request_line(request_line: Vec<u8>) -> Result<(Method, Box<[u8]>, Versi
         .next()
         .ok_or(Response::bad_request("missing HTTP method"))? // no method given
         .try_into()
-        .map_err(Response::bad_request)?;
+        .map_err(|_|Response::bad_request("unrecognized method"))?;
     let target: Box<[u8]> = request_line_split
         .next()
         .ok_or(Response::bad_request("missing HTTP target URL"))? // no target given
