@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use crate::http::{Header, ResponseStatus, Version};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, ErrorKind, Write};
 
 pub struct Response {
     version: Version,
@@ -48,7 +48,6 @@ impl Response {
     }
 }
 
-
 /// resopnse creation
 impl Response {
     pub fn bad_request(cause: impl Display) -> Response {
@@ -76,16 +75,10 @@ impl Response {
         }
     }
 
-    pub fn echo(str: &[u8]) -> Response {
+    pub fn plain_text(str: &[u8]) -> Response {
         let headers = Vec::from_iter([
-            Header {
-                key: "Content-Type".into(),
-                value: "text/plain".into(),
-            },
-            Header {
-                key: "Content-Length".into(),
-                value: str.len().to_string().into(),
-            },
+            Header::content_type("text/plain"),
+            Header::content_length(str),
         ]);
         let body = str.to_vec();
 
@@ -93,6 +86,27 @@ impl Response {
             headers,
             body,
             ..Default::default()
+        }
+    }
+    pub(crate) fn octet_stream(body: Vec<u8>) -> Response {
+        let headers = Vec::from_iter([
+            Header::content_type("application/octet-stream"),
+            Header::content_length(&body),
+        ]);
+        Response {
+            headers,
+            body,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<io::Error> for Response {
+    fn from(io_err: io::Error) -> Response {
+        use ErrorKind as EK;
+        match io_err.kind() {
+            EK::NotFound | EK::PermissionDenied | EK::IsADirectory => Response::not_found(),
+            _ => Response::new_server_error(),
         }
     }
 }

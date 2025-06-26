@@ -1,65 +1,32 @@
 mod http;
+mod thread_pool;
 
-use log::{error, trace};
+use clap::Parser;
 use std::net::TcpListener;
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::{io::BufReader, net::TcpStream, thread};
+use std::sync::OnceLock;
+use std::{io::BufReader, net::TcpStream};
 
 use crate::http::request::Request;
+use crate::thread_pool::ThreadPool;
 
-pub struct ThreadPool {
-    #[allow(dead_code)]
-    workers: Vec<Worker>,
-    sender: Sender<Job>,
+use std::path::Path;
+
+#[derive(Parser)]
+pub struct Args {
+    #[arg(long)]
+    directory: Option<Box<Path>>,
 }
 
-impl ThreadPool {
-    pub fn execute<F>(&self, f: F)
-    where
-        F: FnOnce() + Send + 'static,
-    {
-        let job = Box::new(f);
-
-        self.sender.send(job).unwrap();
-    }
-}
-
-type Job = Box<dyn FnOnce() + Send + 'static>;
-
-impl ThreadPool {
-    pub fn auto(min_size: u8) -> ThreadPool {
-        let available = thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1) as u8;
-        let pool_size = (available - 1).max(min_size);
-
-        let mut workers = Vec::with_capacity(pool_size as usize);
-        let (sender, receiver) = mpsc::channel();
-        let receiver = Arc::new(Mutex::new(receiver));
-
-        for id in 0..pool_size {
-            workers.push(new_worker(id, Arc::clone(&receiver)));
-        }
-
-        ThreadPool { workers, sender }
-    }
-}
-
-type Worker = thread::JoinHandle<()>;
-
-fn new_worker(id: u8, receiver: Arc<Mutex<Receiver<Job>>>) -> Worker {
-    let thread = thread::spawn(move || loop {
-        let job = receiver.lock().unwrap().recv().unwrap();
-        trace!("worker {id} got a job; executing");
-        job();
-    });
-
-    thread
-}
+pub static DIRECTORY: OnceLock<Box<Path>> = OnceLock::new();
 
 fn main() {
     env_logger::init();
+    let args = Args::parse();
+
+    if let Some(dir) = args.directory {
+        DIRECTORY.get_or_init(|| dir);
+    }
+
     log::info!("Logs from your program will appear here!");
     let pool = ThreadPool::auto(5);
 
@@ -71,7 +38,7 @@ fn main() {
                 pool.execute(|| handle_connection(stream));
             }
             Err(e) => {
-                error!("connection failed: {}", e);
+                log::error!("connection failed: {e}");
             }
         }
     }
@@ -88,10 +55,10 @@ fn handle_connection(mut stream: TcpStream) {
 
     match response.write_to(&mut stream) {
         Err(io_error) => {
-            error!("{io_error}");
+            log::error!("{io_error}");
         }
-        Ok(_) => {
-            trace!("response sent");
+        Ok(()) => {
+            log::trace!("response sent");
         }
     }
 }

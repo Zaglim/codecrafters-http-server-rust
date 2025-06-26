@@ -1,19 +1,17 @@
+use crate::http::{response::Response, Header, Method, Version};
+use crate::DIRECTORY;
 use std::{
     collections::HashMap,
     io::{self, BufRead, BufReader},
     net::TcpStream,
 };
 
-use log::trace;
-
-use crate::http::{response::Response, *};
-
 #[derive(Debug)]
 pub struct Request {
     method: Method,
     target: Box<[u8]>,
     _http_version: Version,
-    _headers: HashMap<Box<str>, Box<str>>,
+    headers: HashMap<Box<str>, Box<str>>,
     _body: Box<[u8]>,
 }
 impl Request {
@@ -29,7 +27,7 @@ impl Request {
 fn handle_get(request: &Request) -> Response {
     debug_assert_eq!(request.method, Method::Get);
 
-    trace!("received request {request:?}");
+    log::trace!("received request {request:?}");
 
     let mut delimited = request.target.splitn(3, |c| *c == b'/');
 
@@ -49,12 +47,29 @@ fn handle_get(request: &Request) -> Response {
     let remainder = delimited.next().unwrap_or(b"");
     match endpoint {
         b"" => Response::default(),
-        b"echo" => Response::echo(remainder),
+        b"echo" => Response::plain_text(remainder),
         b"user-agent" if remainder.is_empty() => {
-            let Some(user_agent) = request._headers.get("User-Agent") else {
+            let Some(user_agent) = request.headers.get("User-Agent") else {
                 return Response::bad_request("no user agent");
             };
-            Response::echo(user_agent.as_bytes())
+            Response::plain_text(user_agent.as_bytes())
+        }
+        b"files" => {
+            let Ok(file_name) = String::try_from(remainder.to_vec()) else {
+                return Response::not_found(); // could use bad_request instead
+            };
+
+            let path = {
+                let Some(d) = DIRECTORY.get() else {
+                    return Response::new_server_error();
+                };
+                d.join(file_name)
+            };
+
+            match std::fs::read(path) {
+                Ok(content) => Response::octet_stream(content),
+                Err(io_err) => Response::from(io_err),
+            }
         }
         _other => Response::not_found(),
     }
@@ -68,13 +83,13 @@ impl TryFrom<BufReader<&mut TcpStream>> for Request {
         let request_line = match sbb.next() {
             Some(Ok(bytes)) => bytes,
             Some(Err(e)) => {
-                error!("{e}");
+                log::error!("{e}");
                 return Err(Response::new_server_error());
             }
             None => return Err(Response::bad_request("missing HTTP request line")),
         };
 
-        let (method, target, http_version) = parse_request_line(request_line)?;
+        let (method, target, http_version) = parse_request_line(&request_line)?;
 
         let mut headers = HashMap::new();
         loop {
@@ -92,29 +107,28 @@ impl TryFrom<BufReader<&mut TcpStream>> for Request {
                     eprintln!("{io_error}");
                     return Err(Response::new_server_error());
                 }
-            };
+            }
         }
 
-        // let body = sbb.inn
         let body = Box::new([]);
 
         Ok(Request {
             method,
             target,
             _http_version: http_version,
-            _headers: headers,
+            headers,
             _body: body,
         })
     }
 }
 
-fn parse_request_line(request_line: Vec<u8>) -> Result<(Method, Box<[u8]>, Version), Response> {
+fn parse_request_line(request_line: &[u8]) -> Result<(Method, Box<[u8]>, Version), Response> {
     let mut request_line_split = request_line.split(|b| *b == b' ');
     let method: Method = request_line_split
         .next()
         .ok_or(Response::bad_request("missing HTTP method"))? // no method given
         .try_into()
-        .map_err(|_|Response::bad_request("unrecognized method"))?;
+        .map_err(|()| Response::bad_request("unrecognized method"))?;
     let target: Box<[u8]> = request_line_split
         .next()
         .ok_or(Response::bad_request("missing HTTP target URL"))? // no target given

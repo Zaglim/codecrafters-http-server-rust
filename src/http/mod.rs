@@ -1,5 +1,4 @@
 use core::str;
-use log::error;
 use std::io;
 use std::io::{BufWriter, Write};
 
@@ -23,7 +22,7 @@ impl TryFrom<&'_ [u8]> for Method {
             b"POST" => Ok(Self::Post),
             b"PUT" => Ok(Self::Put),
             bytes => {
-                error!(
+                log::error!(
                     "received unrecognised method: \"{}\"",
                     String::from_utf8_lossy(bytes)
                 );
@@ -68,7 +67,7 @@ impl<'a> TryFrom<&'a [u8]> for Version {
                     "\"{}\" is not a recognised HTTP version",
                     String::from_utf8_lossy(bytes)
                 );
-                error!("{e}");
+                log::error!("{e}");
                 Err(e)
             }
         }
@@ -78,6 +77,22 @@ impl<'a> TryFrom<&'a [u8]> for Version {
 pub struct Header {
     key: Box<str>,
     value: Box<str>,
+}
+
+impl Header {
+    pub fn content_type(value: impl Into<Box<str>>) -> Header {
+        Header {
+            key: "Content-Type".into(),
+            value: value.into(),
+        }
+    }
+
+    pub fn content_length(content: impl AsRef<[u8]>) -> Header {
+        Header {
+            key: "Content-Length".into(),
+            value: content.as_ref().len().to_string().into_boxed_str(),
+        }
+    }
 }
 
 impl TryFrom<Vec<u8>> for Header {
