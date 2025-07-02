@@ -1,7 +1,8 @@
+use crate::http::error::BadRequest;
 use core::str;
-use std::io;
-use std::io::{BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 
+pub mod error;
 pub mod request;
 pub mod response;
 
@@ -13,20 +14,17 @@ pub enum Method {
     // ...
 }
 
-impl TryFrom<&'_ [u8]> for Method {
-    type Error = ();
+impl TryFrom<&'_ str> for Method {
+    type Error = BadRequest;
 
-    fn try_from(value: &'_ [u8]) -> Result<Self, ()> {
+    fn try_from(value: &'_ str) -> Result<Self, BadRequest> {
         match value {
-            b"GET" => Ok(Self::Get),
-            b"POST" => Ok(Self::Post),
-            b"PUT" => Ok(Self::Put),
-            bytes => {
-                log::error!(
-                    "received unrecognised method: \"{}\"",
-                    String::from_utf8_lossy(bytes)
-                );
-                Err(())
+            "GET" => Ok(Self::Get),
+            "POST" => Ok(Self::Post),
+            "PUT" => Ok(Self::Put),
+            other => {
+                log::error!("received unrecognised method: \"{other}\"");
+                Err(BadRequest::UnsupportedMethod)
             }
         }
     }
@@ -55,21 +53,14 @@ impl Version {
     }
 }
 
-impl<'a> TryFrom<&'a [u8]> for Version {
-    type Error = String;
+impl<'a> TryFrom<&'a str> for Version {
+    type Error = BadRequest;
 
-    fn try_from(value: &'a [u8]) -> Result<Self, String> {
+    fn try_from(value: &'a str) -> Result<Self, BadRequest> {
         match value {
-            b"HTTP/1.1" => Ok(Self::Ver1_1),
-            b"HTTP/2.0" => Ok(Self::Ver2_0),
-            bytes => {
-                let e = format!(
-                    "\"{}\" is not a recognised HTTP version",
-                    String::from_utf8_lossy(bytes)
-                );
-                log::error!("{e}");
-                Err(e)
-            }
+            "HTTP/1.1" => Ok(Self::Ver1_1),
+            "HTTP/2.0" => Ok(Self::Ver2_0),
+            _other => Err(BadRequest::UnsupportedHTTPVersion),
         }
     }
 }
@@ -96,13 +87,13 @@ impl Header {
 }
 
 impl TryFrom<Vec<u8>> for Header {
-    type Error = String;
+    type Error = BadRequest;
 
-    fn try_from(bytes: Vec<u8>) -> Result<Self, String> {
+    fn try_from(bytes: Vec<u8>) -> Result<Self, BadRequest> {
         let split_pos = bytes
             .windows(2)
             .position(|b| b == b": ")
-            .ok_or("expecting key and value seperated by \": \"")?;
+            .ok_or(BadRequest::MalformedHeader)?;
         let key: Box<str> = String::from_utf8_lossy(&bytes[..split_pos]).into();
         let value: Box<str> = String::from_utf8_lossy(&bytes[split_pos + 2..]).into();
 
@@ -111,23 +102,25 @@ impl TryFrom<Vec<u8>> for Header {
 }
 
 pub enum ResponseStatus {
-    BadRequest, // 400
+    BadRequest,
     NotFound,
-    Ok,          // 200
-    ServerError, // 300?
+    Ok,
+    ServerError,
+    Created,
 }
 
 impl ResponseStatus {
     pub fn write_to(self, writer: &mut BufWriter<impl Write>) -> io::Result<()> {
-        writer.write_all(self.serialize())
+        writer.write_all(self.serialize().as_bytes())
     }
 
-    fn serialize(self) -> &'static [u8] {
+    fn serialize(self) -> &'static str {
         match self {
-            Self::BadRequest => b"400 Bad Request",
-            Self::NotFound => b"404 Not Found",
-            Self::Ok => b"200 OK",
-            Self::ServerError => b"500 Internal Server Error",
+            Self::Ok => "200 OK",
+            Self::Created => "201 Created",
+            Self::BadRequest => "400 Bad Request",
+            Self::NotFound => "404 Not Found",
+            Self::ServerError => "500 Internal Server Error",
         }
     }
 }

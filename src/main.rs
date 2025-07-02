@@ -1,15 +1,11 @@
 mod http;
 mod thread_pool;
 
+use crate::{http::request::Request, thread_pool::ThreadPool};
 use clap::Parser;
-use std::net::TcpListener;
-use std::sync::OnceLock;
-use std::{io::BufReader, net::TcpStream};
-
-use crate::http::request::Request;
-use crate::thread_pool::ThreadPool;
-
-use std::path::Path;
+use env_logger::Target;
+use log::LevelFilter;
+use std::{io::BufReader, net::TcpListener, net::TcpStream, path::Path, sync::OnceLock};
 
 #[derive(Parser)]
 pub struct Args {
@@ -20,11 +16,16 @@ pub struct Args {
 pub static DIRECTORY: OnceLock<Box<Path>> = OnceLock::new();
 
 fn main() {
-    env_logger::init();
+    env_logger::builder()
+        .target(Target::Stdout)
+        .filter_level(LevelFilter::Trace)
+        .init();
     let args = Args::parse();
 
     if let Some(dir) = args.directory {
         DIRECTORY.get_or_init(|| dir);
+    } else {
+        log::warn!("DIRECTORY not set!");
     }
 
     log::info!("Logs from your program will appear here!");
@@ -49,7 +50,7 @@ fn handle_connection(mut stream: TcpStream) {
     let buf_reader = BufReader::new(&mut stream);
 
     let response = match Request::try_from(buf_reader) {
-        Ok(request) => request.make_response(),
+        Ok(request) => request.handle(),
         Err(err) => err,
     };
 

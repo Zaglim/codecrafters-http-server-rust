@@ -1,95 +1,139 @@
-use crate::http::{response::Response, Header, Method, Version};
-use crate::DIRECTORY;
+use crate::{
+    http::{
+        error::{BadRequest, InvalidTargetError},
+        response::{client_error, server_error, success, Response},
+        Header, Method, Version,
+    },
+    DIRECTORY,
+};
+use core::fmt;
 use std::{
     collections::HashMap,
-    io::{self, BufRead, BufReader},
+    fmt::Formatter,
+    fs,
+    io::{self, BufRead, BufReader, Read},
     net::TcpStream,
+    path::{Path, PathBuf},
 };
 
-#[derive(Debug)]
 pub struct Request {
     method: Method,
-    target: Box<[u8]>,
-    _http_version: Version,
+    target: Target,
+    http_version: Version,
     headers: HashMap<Box<str>, Box<str>>,
-    _body: Box<[u8]>,
+    body: Box<[u8]>,
 }
+
+impl fmt::Debug for Request {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let Request {
+            method,
+            target,
+            http_version,
+            headers,
+            body,
+        } = self;
+        write!(
+            f,
+            "Request: {{\n\
+            method: {method:?},\n\
+            target: {target:?},\n\
+            http_version: {http_version:?},\n\
+            headers: {headers:?}\n\
+            body: {:?},\n\
+            }}",
+            String::from_utf8_lossy(body)
+        )
+    }
+}
+
 impl Request {
-    pub fn make_response(&self) -> Response {
-        match self.method {
-            Method::Get => handle_get(self),
-            Method::Post => todo!(),
-            Method::Put => todo!(),
-        }
+    pub fn handle(self) -> Response {
+        log::trace!("received {self:?}");
+        let Request {
+            target: Target { path_str },
+            body,
+            method,
+            headers,
+            ..
+        } = self;
+
+        let (endpoint, remainder) = path_str.split_once('/').unwrap_or((&path_str, ""));
+
+        let result = match (method, endpoint) {
+            (Method::Get, "") => Ok(Response::default()),
+            (Method::Get, "files") => handle_get_file(remainder),
+            (Method::Post, "files") => handle_post_file(remainder, body),
+            (Method::Get, "echo") => Ok(success::plain_text(remainder.to_string())),
+            (Method::Get, "user-agent") if remainder.is_empty() => handle_get_user_agent(headers),
+            (Method::Get, other) => {
+                log::info!("request to unimplemented endpoint: {other}");
+                Err(client_error::not_found())
+            }
+            (Method::Post, _) => todo!("handle invalid post targets"),
+            (Method::Put, _) => todo!(),
+        };
+        result.unwrap_or_else(Response::from)
     }
 }
 
-fn handle_get(request: &Request) -> Response {
-    debug_assert_eq!(request.method, Method::Get);
+fn handle_post_file(file_path: &str, content: Box<[u8]>) -> Result<Response, Response> {
+    let path = try_create_path(file_path)?;
+    write_creating_parents(path, content)?;
 
-    log::trace!("received request {request:?}");
+    Ok(success::created())
+}
 
-    let mut delimited = request.target.splitn(3, |c| *c == b'/');
+fn handle_get_file(file_path: &str) -> Result<Response, Response> {
+    let path = try_create_path(file_path)?;
 
-    // first in iterator should be "" because target should start with '/'
-    match delimited.next() {
-        Some(b"") => {} // proceed
-        Some(not_empty) => {
-            return Response::bad_request(format!(
-                "malformed taget: {}",
-                String::from_utf8_lossy(not_empty)
-            ));
-        }
-        None => return Response::bad_request("empty target value"),
+    let file_content = fs::read(path)?;
+    Ok(success::octet_stream(file_content))
+}
+
+fn handle_get_user_agent(mut headers: HashMap<Box<str>, Box<str>>) -> Result<Response, Response> {
+    let user_agent = headers
+        .remove("User-Agent")
+        .ok_or(BadRequest::MissingHeader("User-Agent"))?;
+    Ok(success::plain_text(user_agent.into_string()))
+}
+
+/// On some OS, creating a file won't work unless it's parents already exist
+fn write_creating_parents<P, C>(path: P, contents: C) -> io::Result<()>
+where
+    P: AsRef<Path>,
+    C: AsRef<[u8]>,
+{
+    if let Some(parent) = path.as_ref().parent() {
+        fs::create_dir_all(parent)?;
     }
+    fs::write(path, contents)
+}
 
-    let endpoint = delimited.next().unwrap_or(b"");
-    let remainder = delimited.next().unwrap_or(b"");
-    match endpoint {
-        b"" => Response::default(),
-        b"echo" => Response::plain_text(remainder),
-        b"user-agent" if remainder.is_empty() => {
-            let Some(user_agent) = request.headers.get("User-Agent") else {
-                return Response::bad_request("no user agent");
-            };
-            Response::plain_text(user_agent.as_bytes())
-        }
-        b"files" => {
-            let Ok(file_name) = String::try_from(remainder.to_vec()) else {
-                return Response::not_found(); // could use bad_request instead
-            };
-
-            let path = {
-                let Some(d) = DIRECTORY.get() else {
-                    return Response::new_server_error();
-                };
-                d.join(file_name)
-            };
-
-            match std::fs::read(path) {
-                Ok(content) => Response::octet_stream(content),
-                Err(io_err) => Response::from(io_err),
-            }
-        }
-        _other => Response::not_found(),
-    }
+fn try_create_path(file_name: &str) -> Result<PathBuf, Response> {
+    let path = DIRECTORY
+        .get()
+        .ok_or(server_error::generic())
+        .inspect_err(|_| log::error!("DIRECTORY is not set!"))?
+        .join(file_name);
+    Ok(path)
 }
 
 impl TryFrom<BufReader<&mut TcpStream>> for Request {
     type Error = Response;
 
-    fn try_from(buf: BufReader<&mut TcpStream>) -> Result<Request, Response> {
-        let mut sbb = split_by_bytes(buf, *b"\r\n");
+    fn try_from(mut buf: BufReader<&mut TcpStream>) -> Result<Request, Response> {
+        let mut sbb = split_by_bytes(&mut buf, *b"\r\n");
         let request_line = match sbb.next() {
             Some(Ok(bytes)) => bytes,
             Some(Err(e)) => {
                 log::error!("{e}");
-                return Err(Response::new_server_error());
+                return Err(server_error::generic());
             }
-            None => return Err(Response::bad_request("missing HTTP request line")),
+            None => return Err(client_error::bad_request::missing_method()),
         };
 
-        let (method, target, http_version) = parse_request_line(&request_line)?;
+        let (method, target, http_version) = parse_request_line(request_line)?;
 
         let mut headers = HashMap::new();
         loop {
@@ -99,50 +143,64 @@ impl TryFrom<BufReader<&mut TcpStream>> for Request {
             {
                 Ok(bytes) if bytes.is_empty() => break, // found \r\n\r\n (marking end of headers)
                 Ok(bytes) => {
-                    let Header { key, value } =
-                        Header::try_from(bytes).map_err(Response::bad_request)?;
+                    let Header { key, value } = Header::try_from(bytes)?;
                     headers.insert(key, value);
                 }
                 Err(io_error) => {
-                    eprintln!("{io_error}");
-                    return Err(Response::new_server_error());
+                    log::error!("System error: {io_error}");
+                    return Err(server_error::generic());
                 }
             }
         }
 
-        let body = Box::new([]);
+        let body = match method {
+            Method::Get => Box::new([]),
+            Method::Post | Method::Put => {
+                let count: usize = headers
+                    .remove("Content-Length")
+                    .ok_or(BadRequest::MissingHeader("Content-Length"))?
+                    .parse()
+                    .map_err(|_| BadRequest::MalformedHeader)?;
+                let mut vec = vec![0; count];
+                buf.read_exact(&mut vec)?;
+                vec.into_boxed_slice()
+            }
+        };
 
         Ok(Request {
             method,
             target,
-            _http_version: http_version,
+            http_version,
             headers,
-            _body: body,
+            body,
         })
     }
 }
 
-fn parse_request_line(request_line: &[u8]) -> Result<(Method, Box<[u8]>, Version), Response> {
-    let mut request_line_split = request_line.split(|b| *b == b' ');
+fn parse_request_line(request_line: Vec<u8>) -> Result<(Method, Target, Version), BadRequest> {
+    let request_line = String::try_from(request_line)?;
+
+    let mut request_line_split = request_line.split(' ');
+
+    // let mut request_line_split = request_line.split(|b| *b == b' ');
     let method: Method = request_line_split
         .next()
-        .ok_or(Response::bad_request("missing HTTP method"))? // no method given
-        .try_into()
-        .map_err(|()| Response::bad_request("unrecognized method"))?;
-    let target: Box<[u8]> = request_line_split
+        .ok_or(BadRequest::MissingMethod)?
+        .try_into()?;
+
+    let target: Target = request_line_split
         .next()
-        .ok_or(Response::bad_request("missing HTTP target URL"))? // no target given
-        .into();
+        .ok_or(BadRequest::MissingTarget)?
+        .try_into()?;
+
     let http_version: Version = request_line_split
         .next()
-        .ok_or(Response::bad_request("missing HTTP version"))? // no version given
-        .try_into()
-        .map_err(Response::bad_request)?;
-    if let Some(bad) = request_line_split.next() {
-        return Err(Response::bad_request(format!(
-            "expected \\r\\n, found {}",
-            String::from_utf8_lossy(bad)
-        )));
+        .ok_or(BadRequest::MissingHTTPVersion)? // no version given
+        .try_into()?;
+
+    if request_line_split.next().is_some() {
+        // expected \\r\\n
+        return Err(BadRequest::MissingCRLF);
     }
     Ok((method, target, http_version))
 }
@@ -163,19 +221,44 @@ impl<B: BufRead, const N: usize> Iterator for SplitByBytes<B, N> {
     fn next(&mut self) -> Option<io::Result<Vec<u8>>> {
         let mut vec = Vec::new();
 
+        let last_of_delimiter = self.delimiter[N - 1];
         loop {
-            match self.buf.read_until(self.delimiter[N - 1], &mut vec) {
-                Ok(0) => return None,
+            match self.buf.read_until(last_of_delimiter, &mut vec) {
+                Ok(0) => return None, // End of reader
                 Err(e) => return Some(Err(e)),
-                Ok(_) => {}
-            }
-
-            if vec.ends_with(&self.delimiter) {
-                for _ in 0..N {
-                    vec.pop();
+                Ok(_) if vec.ends_with(&self.delimiter) => {
+                    for _ in 0..N {
+                        vec.pop();
+                    }
+                    return Some(Ok(vec));
                 }
-                return Some(Ok(vec));
+                Ok(_) => {} // continue
             }
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct Target {
+    path_str: String,
+    // query component(s)
+}
+
+impl TryFrom<&'_ str> for Target {
+    type Error = InvalidTargetError;
+    fn try_from(str: &str) -> Result<Target, InvalidTargetError> {
+        let (prefix, relevant) = str.split_at(1);
+
+        if prefix != "/" {
+            log::trace!("target deemed invalid: does not start with '/': {str:?}");
+            return Err(InvalidTargetError::DoesNotStartWithSlash);
+        }
+
+        let mut split = relevant.split('?'); // todo check the rules of URLs and consider TryFrom instead. This split might not be enough?
+        let path = split.next().unwrap_or("").to_string();
+
+        // todo add query parameters
+
+        Ok(Target { path_str: path })
     }
 }

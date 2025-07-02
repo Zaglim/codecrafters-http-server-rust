@@ -1,3 +1,5 @@
+# Hello
+
 [![progress-banner](https://backend.codecrafters.io/progress/http-server/95cc0400-13c0-48d8-a2cb-59ca94c372dc)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
 
 This is a starting point for Rust solutions to the

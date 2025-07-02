@@ -1,6 +1,4 @@
-use std::fmt::Display;
-
-use crate::http::{Header, ResponseStatus, Version};
+use crate::http::{error, Header, ResponseStatus, Version};
 use std::io::{self, BufWriter, ErrorKind, Write};
 
 pub struct Response {
@@ -48,39 +46,28 @@ impl Response {
     }
 }
 
-/// resopnse creation
-impl Response {
-    pub fn bad_request(cause: impl Display) -> Response {
+impl From<error::BadRequest> for Response {
+    fn from(error: error::BadRequest) -> Self {
         Response {
             status: ResponseStatus::BadRequest,
-            headers: [Header {
-                key: "cause".into(),
-                value: cause.to_string().into(),
-            }]
-            .into(),
-            ..Default::default()
+            headers: vec![Header {
+                key: "Cause".into(),
+                value: error.to_string().into(),
+            }],
+            ..Self::default()
         }
     }
-    pub fn new_server_error() -> Response {
-        Response {
-            status: ResponseStatus::ServerError,
-            ..Default::default()
-        }
-    }
+}
 
-    pub fn not_found() -> Response {
-        Response {
-            status: ResponseStatus::NotFound,
-            ..Default::default()
-        }
-    }
-
-    pub fn plain_text(str: &[u8]) -> Response {
+pub mod success {
+    use crate::http::response::Response;
+    use crate::http::{Header, ResponseStatus};
+    pub fn plain_text(str: String) -> Response {
         let headers = Vec::from_iter([
             Header::content_type("text/plain"),
-            Header::content_length(str),
+            Header::content_length(&str),
         ]);
-        let body = str.to_vec();
+        let body = str.into_bytes();
 
         Response {
             headers,
@@ -88,7 +75,7 @@ impl Response {
             ..Default::default()
         }
     }
-    pub(crate) fn octet_stream(body: Vec<u8>) -> Response {
+    pub fn octet_stream(body: Vec<u8>) -> Response {
         let headers = Vec::from_iter([
             Header::content_type("application/octet-stream"),
             Header::content_length(&body),
@@ -99,14 +86,70 @@ impl Response {
             ..Default::default()
         }
     }
+
+    pub fn created() -> Response {
+        Response {
+            status: ResponseStatus::Created,
+            ..Default::default()
+        }
+    }
+}
+
+pub mod server_error {
+    use crate::http::response::Response;
+    use crate::http::ResponseStatus;
+
+    pub fn generic() -> Response {
+        Response {
+            status: ResponseStatus::ServerError,
+            ..Default::default()
+        }
+    }
+}
+
+pub mod client_error {
+    use crate::http::response::Response;
+    use crate::http::ResponseStatus;
+
+    pub mod bad_request {
+        use crate::http::response::Response;
+        use crate::http::{Header, ResponseStatus};
+
+        fn generic() -> Response {
+            Response {
+                status: ResponseStatus::BadRequest,
+                ..Default::default()
+            }
+        }
+
+        fn with_cause(cause: &'static str) -> Response {
+            let mut response = generic();
+            response.headers.push(Header {
+                key: "Cause".into(),
+                value: cause.into(),
+            });
+            response
+        }
+
+        pub(crate) fn missing_method() -> Response {
+            with_cause("Missing method")
+        }
+    }
+
+    pub(crate) fn not_found() -> Response {
+        Response {
+            status: ResponseStatus::NotFound,
+            ..Default::default()
+        }
+    }
 }
 
 impl From<io::Error> for Response {
     fn from(io_err: io::Error) -> Response {
         use ErrorKind as EK;
         match io_err.kind() {
-            EK::NotFound | EK::PermissionDenied | EK::IsADirectory => Response::not_found(),
-            _ => Response::new_server_error(),
+            EK::NotFound | EK::PermissionDenied | EK::IsADirectory => client_error::not_found(),
+            _ => server_error::generic(),
         }
     }
 }
