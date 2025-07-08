@@ -1,11 +1,71 @@
-use crate::http::{error, Header, ResponseStatus, Version};
-use std::io::{self, BufWriter, ErrorKind, Write};
+use crate::encoding::Encoding;
+use crate::http::response::content_type::ContentType;
+use crate::http::{error, Version, WriteHeader};
+use std::collections::HashMap;
+use std::io::{self, BufWriter, Write};
 
 pub struct Response {
     version: Version,
     status: ResponseStatus, // serialization includes code and message
-    headers: Vec<Header>,
-    body: Vec<u8>,
+    dyn_headers: HashMap<Box<str>, Box<str>>,
+    body_data: Option<BodyData>,
+}
+
+pub struct BodyData {
+    content_type: ContentType,
+    opt_encoding: Option<Encoding>,
+    body: Vec<u8>, // "Content-Length" header is generated from this
+}
+
+mod content_type {
+    pub enum ContentType {
+        Application(Application),
+        Text(Text),
+    }
+
+    impl ContentType {
+        pub(crate) fn as_text(&self) -> &[u8] {
+            match self {
+                ContentType::Application(a) => match a {
+                    Application::OctetStream => b"application/octet-stream",
+                },
+                ContentType::Text(t) => match t {
+                    Text::Plain => b"text/plain",
+                },
+            }
+        }
+    }
+
+    pub enum Application {
+        OctetStream,
+    }
+    pub enum Text {
+        Plain,
+    }
+}
+
+pub enum ResponseStatus {
+    BadRequest,
+    NotFound,
+    Ok,
+    ServerError,
+    Created,
+}
+
+impl ResponseStatus {
+    pub fn write_to(self, writer: &mut BufWriter<impl Write>) -> io::Result<()> {
+        writer.write_all(self.serialize().as_bytes())
+    }
+
+    fn serialize(self) -> &'static str {
+        match self {
+            Self::Ok => "200 OK",
+            Self::Created => "201 Created",
+            Self::BadRequest => "400 Bad Request",
+            Self::NotFound => "404 Not Found",
+            Self::ServerError => "500 Internal Server Error",
+        }
+    }
 }
 
 impl Default for Response {
@@ -13,36 +73,62 @@ impl Default for Response {
         Response {
             version: Version::Ver1_1,
             status: ResponseStatus::Ok,
-            headers: Vec::new(),
-            body: Vec::new(),
+            dyn_headers: HashMap::new(),
+            body_data: None,
         }
     }
 }
 
+pub const CRLF: [u8; 2] = [b'\r', b'\n'];
+
 impl Response {
     pub fn write_to(self, stream: impl Write) -> io::Result<()> {
+        let Response {
+            version,
+            status,
+            dyn_headers,
+            body_data,
+        } = self;
+
         let mut writer = BufWriter::new(stream);
 
         // Write first line
-        self.version.write_to(&mut writer)?;
+        version.write_to(&mut writer)?;
         writer.write_all(b" ")?;
-        self.status.write_to(&mut writer)?;
-        writer.write_all(b"\r\n")?;
+        status.write_to(&mut writer)?;
+        writer.write_all(&CRLF)?;
 
-        // Write headers
-        for header in &self.headers {
-            writer.write_all(header.key.as_bytes())?;
-            writer.write_all(b": ")?;
-            writer.write_all(header.value.as_bytes())?;
-            writer.write_all(b"\r\n")?;
+        // Write headers (excluding body related headers)
+        for (key, value) in dyn_headers {
+            writer.write_header(key.as_bytes(), value.as_bytes())?;
         }
 
-        // Signal end of headers
-        writer.write_all(b"\r\n")?;
+        if let Some(BodyData {
+            content_type,
+            opt_encoding,
+            body,
+        }) = body_data
+        {
+            // add body related headers
+            writer.write_header("Content-Type", content_type.as_text())?;
+            writer.write_header("Content-Length", body.len().to_string().as_bytes())?;
+            if let Some(encoding) = opt_encoding {
+                writer.write_header(
+                    b"Content-Encoding",
+                    match encoding {
+                        Encoding::Gzip => b"gzip",
+                    },
+                )?;
+            }
+            // Signal end of headers
+            writer.write_all(&CRLF)?;
 
-        writer.write_all(&self.body)?;
-
-        writer.flush()
+            writer.write_all(&body)?;
+        } else {
+            // Signal end of headers
+            writer.write_all(&CRLF)?;
+        }
+        Ok(())
     }
 }
 
@@ -50,39 +136,62 @@ impl From<error::BadRequest> for Response {
     fn from(error: error::BadRequest) -> Self {
         Response {
             status: ResponseStatus::BadRequest,
-            headers: vec![Header {
-                key: "Cause".into(),
-                value: error.to_string().into(),
-            }],
+            dyn_headers: HashMap::from([("Cause".into(), error.to_string().into())]),
             ..Self::default()
         }
     }
 }
 
 pub mod success {
-    use crate::http::response::Response;
-    use crate::http::{Header, ResponseStatus};
-    pub fn plain_text(str: String) -> Response {
-        let headers = Vec::from_iter([
-            Header::content_type("text/plain"),
-            Header::content_length(&str),
-        ]);
-        let body = str.into_bytes();
+    use crate::{
+        encoding::{read_and_encode, Encoding},
+        http::{
+            response::{
+                content_type::{Application::OctetStream, ContentType, Text::Plain},
+                BodyData, Response, ResponseStatus,
+            },
+            READING_MEMORY,
+        },
+    };
+
+    pub fn plain_text(str: String, opt_encoding: Option<Encoding>) -> Response {
+        let body = if let Some(encoding) = opt_encoding {
+            read_and_encode(str.as_bytes(), encoding).expect(READING_MEMORY)
+        } else {
+            str.into_bytes()
+        };
+
+        let body_data = BodyData {
+            content_type: ContentType::Text(Plain),
+            opt_encoding,
+            body,
+        };
 
         Response {
-            headers,
-            body,
+            body_data: Some(body_data),
             ..Default::default()
         }
     }
-    pub fn octet_stream(body: Vec<u8>) -> Response {
-        let headers = Vec::from_iter([
-            Header::content_type("application/octet-stream"),
-            Header::content_length(&body),
-        ]);
-        Response {
-            headers,
+    pub fn octet_stream(unencoded_body: Vec<u8>, opt_encoding: Option<Encoding>) -> Response {
+        // let mut headers = HashM[
+        //     Header::content_type("application/octet-stream"),
+        //     Header::content_length(&body),
+        // ];
+
+        let body = if let Some(encoding) = opt_encoding {
+            read_and_encode(unencoded_body.as_slice(), encoding).expect(READING_MEMORY)
+        } else {
+            unencoded_body
+        };
+
+        let body_data = BodyData {
+            content_type: ContentType::Application(OctetStream),
+            opt_encoding,
             body,
+        };
+
+        Response {
+            body_data: Some(body_data),
             ..Default::default()
         }
     }
@@ -96,8 +205,7 @@ pub mod success {
 }
 
 pub mod server_error {
-    use crate::http::response::Response;
-    use crate::http::ResponseStatus;
+    use crate::http::response::{Response, ResponseStatus};
 
     pub fn generic() -> Response {
         Response {
@@ -108,12 +216,10 @@ pub mod server_error {
 }
 
 pub mod client_error {
-    use crate::http::response::Response;
-    use crate::http::ResponseStatus;
+    use crate::http::response::{Response, ResponseStatus};
 
     pub mod bad_request {
-        use crate::http::response::Response;
-        use crate::http::{Header, ResponseStatus};
+        use crate::http::response::{Response, ResponseStatus};
 
         fn generic() -> Response {
             Response {
@@ -124,32 +230,19 @@ pub mod client_error {
 
         fn with_cause(cause: &'static str) -> Response {
             let mut response = generic();
-            response.headers.push(Header {
-                key: "Cause".into(),
-                value: cause.into(),
-            });
+            response.dyn_headers.insert("Cause".into(), cause.into());
             response
         }
 
-        pub(crate) fn missing_method() -> Response {
+        pub fn missing_method() -> Response {
             with_cause("Missing method")
         }
     }
 
-    pub(crate) fn not_found() -> Response {
+    pub fn not_found() -> Response {
         Response {
             status: ResponseStatus::NotFound,
             ..Default::default()
-        }
-    }
-}
-
-impl From<io::Error> for Response {
-    fn from(io_err: io::Error) -> Response {
-        use ErrorKind as EK;
-        match io_err.kind() {
-            EK::NotFound | EK::PermissionDenied | EK::IsADirectory => client_error::not_found(),
-            _ => server_error::generic(),
         }
     }
 }

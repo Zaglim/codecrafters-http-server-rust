@@ -1,4 +1,5 @@
-use std::string::FromUtf8Error;
+use crate::http::response::{client_error, server_error, Response};
+use std::{io, string::FromUtf8Error};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -34,5 +35,15 @@ pub enum InvalidTargetError {
 impl From<FromUtf8Error> for BadRequest {
     fn from(_: FromUtf8Error) -> Self {
         BadRequest::NotUTF8
+    }
+}
+
+impl From<io::Error> for Response {
+    fn from(io_err: io::Error) -> Response {
+        use io::ErrorKind as EK;
+        match io_err.kind() {
+            EK::NotFound | EK::PermissionDenied | EK::IsADirectory => client_error::not_found(),
+            _ => server_error::generic(),
+        }
     }
 }

@@ -1,16 +1,16 @@
 use crate::{
+    encoding::{self, Encoding},
     http::{
         error::{BadRequest, InvalidTargetError},
-        response::{client_error, server_error, success, Response},
+        response::{client_error, server_error, success, Response, CRLF},
         Header, Method, Version,
     },
     DIRECTORY,
 };
-use core::fmt;
 use std::{
     collections::HashMap,
-    fmt::Formatter,
-    fs,
+    fmt::{self, Formatter},
+    fs::{self, File},
     io::{self, BufRead, BufReader, Read},
     net::TcpStream,
     path::{Path, PathBuf},
@@ -54,24 +54,30 @@ impl Request {
             target: Target { path_str },
             body,
             method,
-            headers,
+            mut headers,
             ..
         } = self;
 
         let (endpoint, remainder) = path_str.split_once('/').unwrap_or((&path_str, ""));
 
+        let encoding_options_str = headers.remove("Accept-Encoding").unwrap_or("".into());
+        let response_encoding = get_first_supported_encoding(&encoding_options_str);
+        dbg!(&response_encoding);
+
         let result = match (method, endpoint) {
             (Method::Get, "") => Ok(Response::default()),
-            (Method::Get, "files") => handle_get_file(remainder),
+            (Method::Get, "files") => handle_get_file(remainder, response_encoding),
             (Method::Post, "files") => handle_post_file(remainder, body),
-            (Method::Get, "echo") => Ok(success::plain_text(remainder.to_string())),
+            (Method::Get, "echo") => Ok(success::plain_text(
+                remainder.to_string(),
+                response_encoding,
+            )),
             (Method::Get, "user-agent") if remainder.is_empty() => handle_get_user_agent(headers),
             (Method::Get, other) => {
-                log::info!("request to unimplemented endpoint: {other}");
+                log::debug!("request to unimplemented endpoint: {other}");
                 Err(client_error::not_found())
             }
             (Method::Post, _) => todo!("handle invalid post targets"),
-            (Method::Put, _) => todo!(),
         };
         result.unwrap_or_else(Response::from)
     }
@@ -84,18 +90,34 @@ fn handle_post_file(file_path: &str, content: Box<[u8]>) -> Result<Response, Res
     Ok(success::created())
 }
 
-fn handle_get_file(file_path: &str) -> Result<Response, Response> {
+fn handle_get_file(file_path: &str, opt_encoding: Option<Encoding>) -> Result<Response, Response> {
+    log::debug!("retreiving file...");
     let path = try_create_path(file_path)?;
 
-    let file_content = fs::read(path)?;
-    Ok(success::octet_stream(file_content))
+    let mut file = File::open(path)?;
+    let body = if let Some(encoding) = opt_encoding {
+        encoding::read_and_encode(file, encoding)?
+    } else {
+        let mut vec = Vec::new();
+        file.read_to_end(&mut vec)?;
+        vec
+    };
+
+    Ok(success::octet_stream(body, opt_encoding))
+}
+
+fn get_first_supported_encoding(supported_encodings_str: &str) -> Option<Encoding> {
+    dbg!(supported_encodings_str);
+    supported_encodings_str
+        .split_ascii_whitespace()
+        .find_map(|str| Encoding::try_from(str).ok())
 }
 
 fn handle_get_user_agent(mut headers: HashMap<Box<str>, Box<str>>) -> Result<Response, Response> {
     let user_agent = headers
         .remove("User-Agent")
         .ok_or(BadRequest::MissingHeader("User-Agent"))?;
-    Ok(success::plain_text(user_agent.into_string()))
+    Ok(success::plain_text(user_agent.into_string(), None))
 }
 
 /// On some OS, creating a file won't work unless it's parents already exist
@@ -118,12 +140,15 @@ fn try_create_path(file_name: &str) -> Result<PathBuf, Response> {
         .join(file_name);
     Ok(path)
 }
+pub trait RequestSource {
+    fn read_request(self) -> Result<Request, Response>;
+}
 
-impl TryFrom<BufReader<&mut TcpStream>> for Request {
-    type Error = Response;
+impl RequestSource for &mut TcpStream {
+    fn read_request(self) -> Result<Request, Response> {
+        let mut buf = BufReader::new(self);
 
-    fn try_from(mut buf: BufReader<&mut TcpStream>) -> Result<Request, Response> {
-        let mut sbb = split_by_bytes(&mut buf, *b"\r\n");
+        let mut sbb = split_by_bytes(&mut buf, CRLF);
         let request_line = match sbb.next() {
             Some(Ok(bytes)) => bytes,
             Some(Err(e)) => {
@@ -155,7 +180,7 @@ impl TryFrom<BufReader<&mut TcpStream>> for Request {
 
         let body = match method {
             Method::Get => Box::new([]),
-            Method::Post | Method::Put => {
+            Method::Post => {
                 let count: usize = headers
                     .remove("Content-Length")
                     .ok_or(BadRequest::MissingHeader("Content-Length"))?
@@ -167,13 +192,15 @@ impl TryFrom<BufReader<&mut TcpStream>> for Request {
             }
         };
 
-        Ok(Request {
+        let request = Request {
             method,
             target,
             http_version,
             headers,
             body,
-        })
+        };
+        log::trace!("parsed request: {request:?}");
+        Ok(request)
     }
 }
 

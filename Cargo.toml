@@ -6,9 +6,10 @@ edition = "2021"
 rust-version = "1.80"
 
 [dependencies]
-bytes = "1.3.0"                                  # helps manage buffers
+#bytes = "1.3.0"                                  # helps manage buffers
 clap = { version = "4.5.40", features = ["derive"] }
 enum_dispatch = "0.3.13"
 env_logger = "0.11.8"
+flate2 = "1.1.2"
 log = "0.4.27"                             # error handling
 thiserror = "2.0.12"

@@ -1,11 +1,19 @@
+pub mod encoding;
 mod http;
 mod thread_pool;
 
-use crate::{http::request::Request, thread_pool::ThreadPool};
+use crate::{http::request::RequestSource, thread_pool::ThreadPool};
 use clap::Parser;
-use env_logger::Target;
+use env_logger::{Target, WriteStyle::Always};
+use log::Level::Debug;
 use log::LevelFilter;
-use std::{io::BufReader, net::TcpListener, net::TcpStream, path::Path, sync::OnceLock};
+use std::{
+    io::Read,
+    net::{TcpListener, TcpStream},
+    path::Path,
+    sync::OnceLock,
+};
+use crate::http::HTTPCarrier;
 
 #[derive(Parser)]
 pub struct Args {
@@ -16,10 +24,15 @@ pub struct Args {
 pub static DIRECTORY: OnceLock<Box<Path>> = OnceLock::new();
 
 fn main() {
-    env_logger::builder()
+    env_logger::Builder::new()
+        .filter_level(LevelFilter::Debug)
         .target(Target::Stdout)
-        .filter_level(LevelFilter::Trace)
+        .format_timestamp(None)
+        .write_style(Always)
+        .parse_default_env()
         .init();
+    dbg!(log::max_level());
+
     let args = Args::parse();
 
     if let Some(dir) = args.directory {
@@ -28,7 +41,6 @@ fn main() {
         log::warn!("DIRECTORY not set!");
     }
 
-    log::info!("Logs from your program will appear here!");
     let pool = ThreadPool::auto(5);
 
     let listener = TcpListener::bind("127.0.0.1:4221").unwrap();
@@ -47,16 +59,20 @@ fn main() {
 
 fn handle_connection(mut stream: TcpStream) {
     log::info!("accepted new connection");
-    let buf_reader = BufReader::new(&mut stream);
 
-    let response = match Request::try_from(buf_reader) {
+    let response = match stream.by_ref().read_request() {
         Ok(request) => request.handle(),
         Err(err) => err,
     };
+    
 
-    match response.write_to(&mut stream) {
+    match stream.respond(response) {
         Err(io_error) => {
-            log::error!("{io_error}");
+            if log::log_enabled!(Debug) {
+                log::debug!("failed to write response to stream: {io_error:?}\n{stream:?}");
+            } else {
+                log::info!("failed to write response to stream: {io_error}");
+            }
         }
         Ok(()) => {
             log::trace!("response sent");

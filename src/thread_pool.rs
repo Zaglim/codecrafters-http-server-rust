@@ -23,7 +23,7 @@ type Job = Box<dyn FnOnce() + Send + 'static>;
 
 impl ThreadPool {
     pub fn auto(min_size: u8) -> ThreadPool {
-        let available:u8 = thread::available_parallelism()
+        let available: u8 = thread::available_parallelism()
             .map_or(1, usize::from)
             .try_into()
             .unwrap_or(1);
@@ -46,7 +46,7 @@ type Worker = thread::JoinHandle<()>;
 fn new_worker(id: u8, receiver: Arc<Mutex<Receiver<Job>>>) -> Worker {
     let thread = thread::spawn(move || loop {
         let job = receiver.lock().unwrap().recv().unwrap();
-        log::trace!("worker {id} got a job; executing");
+        log::info!("worker {id} got a job; executing");
         job();
     });
 

@@ -1,6 +1,7 @@
 use crate::http::error::BadRequest;
-use core::str;
-use std::io::{self, BufWriter, Write};
+use crate::http::response::{Response, CRLF};
+use std::io::{self, Write};
+use std::net::TcpStream;
 
 pub mod error;
 pub mod request;
@@ -10,7 +11,7 @@ pub mod response;
 pub enum Method {
     Get,
     Post,
-    Put,
+    // Put,
     // ...
 }
 
@@ -21,7 +22,7 @@ impl TryFrom<&'_ str> for Method {
         match value {
             "GET" => Ok(Self::Get),
             "POST" => Ok(Self::Post),
-            "PUT" => Ok(Self::Put),
+            // "PUT" => Ok(Self::Put),
             other => {
                 log::error!("received unrecognised method: \"{other}\"");
                 Err(BadRequest::UnsupportedMethod)
@@ -39,7 +40,7 @@ pub enum Version {
 }
 
 impl Version {
-    pub(crate) fn write_to<T: Write>(self, writer: &mut BufWriter<T>) -> io::Result<()> {
+    pub fn write_to(self, mut writer: impl Write) -> io::Result<()> {
         writer.write_all(self.serialize())
     }
 }
@@ -70,22 +71,6 @@ pub struct Header {
     value: Box<str>,
 }
 
-impl Header {
-    pub fn content_type(value: impl Into<Box<str>>) -> Header {
-        Header {
-            key: "Content-Type".into(),
-            value: value.into(),
-        }
-    }
-
-    pub fn content_length(content: impl AsRef<[u8]>) -> Header {
-        Header {
-            key: "Content-Length".into(),
-            value: content.as_ref().len().to_string().into_boxed_str(),
-        }
-    }
-}
-
 impl TryFrom<Vec<u8>> for Header {
     type Error = BadRequest;
 
@@ -101,26 +86,27 @@ impl TryFrom<Vec<u8>> for Header {
     }
 }
 
-pub enum ResponseStatus {
-    BadRequest,
-    NotFound,
-    Ok,
-    ServerError,
-    Created,
+pub const READING_MEMORY: &str = "Reading a slice is infallable";
+
+pub trait HTTPCarrier {
+    fn respond(&mut self, response: Response) -> io::Result<()>;
 }
 
-impl ResponseStatus {
-    pub fn write_to(self, writer: &mut BufWriter<impl Write>) -> io::Result<()> {
-        writer.write_all(self.serialize().as_bytes())
-    }
-
-    fn serialize(self) -> &'static str {
-        match self {
-            Self::Ok => "200 OK",
-            Self::Created => "201 Created",
-            Self::BadRequest => "400 Bad Request",
-            Self::NotFound => "404 Not Found",
-            Self::ServerError => "500 Internal Server Error",
-        }
+impl HTTPCarrier for TcpStream {
+    fn respond(&mut self, response: Response) -> io::Result<()> {
+        response.write_to(&mut *self)?;
+        self.flush()
     }
 }
+
+pub trait WriteHeader: Write {
+    fn write_header(&mut self, key: impl AsRef<[u8]>, value: &[u8]) -> io::Result<()> {
+        self.write_all(key.as_ref())?;
+        self.write_all(b": ")?;
+        self.write_all(value)?;
+        self.write_all(&CRLF)?;
+        Ok(())
+    }
+}
+
+impl<T: Write> WriteHeader for T {}
