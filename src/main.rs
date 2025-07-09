@@ -64,6 +64,8 @@ fn handle_connection(mut stream: TcpStream) {
             Err(None) => break, // Stream has been closed
         };
 
+        let close_sent = response.closing();
+
         match stream.respond(response) {
             Err(io_error) => {
                 if log::log_enabled!(Debug) {
@@ -75,6 +77,9 @@ fn handle_connection(mut stream: TcpStream) {
             Ok(()) => {
                 log::trace!("response sent");
             }
+        }
+        if close_sent {
+            break
         }
     }
 }

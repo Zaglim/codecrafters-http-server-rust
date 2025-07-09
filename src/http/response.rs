@@ -11,6 +11,12 @@ pub struct Response {
     body_data: Option<BodyData>,
 }
 
+impl Response {
+    pub(crate) fn closing(&self) -> bool {
+        self.dyn_headers.get("Connection").map(Box::as_ref) == Some("close")
+    }
+}
+
 pub struct BodyData {
     content_type: ContentType,
     opt_encoding: Option<Encoding>,
