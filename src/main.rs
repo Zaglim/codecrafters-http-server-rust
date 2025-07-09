@@ -57,21 +57,23 @@ fn main() {
 fn handle_connection(mut stream: TcpStream) {
     log::info!("accepted new connection");
 
-    let response = match stream.read_request() {
-        Ok(request) => request.handle(),
-        Err(err) => err,
-    };
+    loop {
+        let response = match stream.read_request() {
+            Ok(request) => request.handle(),
+            Err(err) => err,
+        };
 
-    match stream.respond(response) {
-        Err(io_error) => {
-            if log::log_enabled!(Debug) {
-                log::debug!("failed to write response to stream: {io_error:?}\n{stream:?}");
-            } else {
-                log::info!("failed to write response to stream: {io_error}");
+        match stream.respond(response) {
+            Err(io_error) => {
+                if log::log_enabled!(Debug) {
+                    log::debug!("failed to write response to stream: {io_error:?}\n{stream:?}");
+                } else {
+                    log::info!("failed to write response to stream: {io_error}");
+                }
             }
-        }
-        Ok(()) => {
-            log::trace!("response sent");
+            Ok(()) => {
+                log::trace!("response sent");
+            }
         }
     }
 }
