@@ -72,14 +72,26 @@ impl Request {
                 remainder.to_string(),
                 response_encoding,
             )),
-            (Method::Get, "user-agent") if remainder.is_empty() => handle_get_user_agent(headers),
+            (Method::Get, "user-agent") if remainder.is_empty() => {
+                handle_get_user_agent(&mut headers)
+            }
             (Method::Get, other) => {
                 log::debug!("request to unimplemented endpoint: {other}");
                 Err(client_error::not_found())
             }
             (Method::Post, _) => todo!("handle invalid post targets"),
         };
-        result.unwrap_or_else(Response::from)
+
+        let mut result = result.unwrap_or_else(Response::from);
+
+        if headers
+            .remove("Connection")
+            .is_some_and(|val| val.as_ref() == "close")
+        {
+            result.add_header("Connection", "close");
+        }
+
+        result
     }
 }
 
@@ -114,7 +126,7 @@ fn get_first_supported_encoding(supported_encodings_str: &str) -> Option<Encodin
         .find_map(|str| Encoding::try_from(str).ok())
 }
 
-fn handle_get_user_agent(mut headers: HashMap<Box<str>, Box<str>>) -> Result<Response, Response> {
+fn handle_get_user_agent(headers: &mut HashMap<Box<str>, Box<str>>) -> Result<Response, Response> {
     let user_agent = headers
         .remove("User-Agent")
         .ok_or(BadRequest::MissingHeader("User-Agent"))?;

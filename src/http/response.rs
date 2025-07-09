@@ -12,6 +12,12 @@ pub struct Response {
 }
 
 impl Response {
+    pub(crate) fn add_header(&mut self, p0: &str, p1: &str) {
+        self.dyn_headers.insert(p0.into(), p1.into());
+    }
+}
+
+impl Response {
     pub(crate) fn closing(&self) -> bool {
         self.dyn_headers.get("Connection").map(Box::as_ref) == Some("close")
     }
