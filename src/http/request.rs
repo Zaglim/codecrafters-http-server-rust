@@ -109,7 +109,8 @@ fn handle_get_file(file_path: &str, opt_encoding: Option<Encoding>) -> Result<Re
 fn get_first_supported_encoding(supported_encodings_str: &str) -> Option<Encoding> {
     dbg!(supported_encodings_str);
     supported_encodings_str
-        .split_ascii_whitespace()
+        .split(',')
+        .map(str::trim_ascii_start)
         .find_map(|str| Encoding::try_from(str).ok())
 }
 
@@ -141,11 +142,11 @@ fn try_create_path(file_name: &str) -> Result<PathBuf, Response> {
     Ok(path)
 }
 pub trait RequestSource {
-    fn read_request(self) -> Result<Request, Response>;
+    fn read_request(&mut self) -> Result<Request, Response>;
 }
 
-impl RequestSource for &mut TcpStream {
-    fn read_request(self) -> Result<Request, Response> {
+impl RequestSource for TcpStream {
+    fn read_request(&mut self) -> Result<Request, Response> {
         let mut buf = BufReader::new(self);
 
         let mut sbb = split_by_bytes(&mut buf, CRLF);
@@ -184,8 +185,10 @@ impl RequestSource for &mut TcpStream {
                 let count: usize = headers
                     .remove("Content-Length")
                     .ok_or(BadRequest::MissingHeader("Content-Length"))?
-                    .parse()
-                    .map_err(|_| BadRequest::MalformedHeader)?;
+                    .parse::<usize>()
+                    .map_err(|_| BadRequest::HeaderValueParseError {
+                        key: "Content-Length".to_string(),
+                    })?;
                 let mut vec = vec![0; count];
                 buf.read_exact(&mut vec)?;
                 vec.into_boxed_slice()

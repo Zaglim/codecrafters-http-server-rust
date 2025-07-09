@@ -22,6 +22,8 @@ pub enum BadRequest {
     MissingHeader(&'static str),
     #[error("Malformed header. Recquires delimiting ': '")]
     MalformedHeader,
+    #[error("value of header {key:?} is malformed")]
+    HeaderValueParseError {key: String },
     #[error("missing a target")]
     MissingTarget,
 }

@@ -1,19 +1,16 @@
-pub mod encoding;
+mod encoding;
 mod http;
 mod thread_pool;
 
-use crate::{http::request::RequestSource, thread_pool::ThreadPool};
+use crate::{http::request::RequestSource, http::HTTPCarrier, thread_pool::ThreadPool};
 use clap::Parser;
 use env_logger::{Target, WriteStyle::Always};
-use log::Level::Debug;
-use log::LevelFilter;
+use log::{Level::Debug, LevelFilter};
 use std::{
-    io::Read,
     net::{TcpListener, TcpStream},
     path::Path,
     sync::OnceLock,
 };
-use crate::http::HTTPCarrier;
 
 #[derive(Parser)]
 pub struct Args {
@@ -60,11 +57,10 @@ fn main() {
 fn handle_connection(mut stream: TcpStream) {
     log::info!("accepted new connection");
 
-    let response = match stream.by_ref().read_request() {
+    let response = match stream.read_request() {
         Ok(request) => request.handle(),
         Err(err) => err,
     };
-    
 
     match stream.respond(response) {
         Err(io_error) => {
