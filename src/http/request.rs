@@ -142,31 +142,27 @@ fn try_create_path(file_name: &str) -> Result<PathBuf, Response> {
     Ok(path)
 }
 pub trait RequestSource {
-    fn read_request(&mut self) -> Result<Request, Response>;
+    fn read_request(&mut self) -> Result<Request, Option<Response>>;
 }
 
 impl RequestSource for TcpStream {
-    fn read_request(&mut self) -> Result<Request, Response> {
+    fn read_request(&mut self) -> Result<Request, Option<Response>> {
         let mut buf = BufReader::new(self);
 
         let mut sbb = split_by_bytes(&mut buf, CRLF);
-        let request_line = match sbb.next() {
-            Some(Ok(bytes)) => bytes,
-            Some(Err(e)) => {
+        let request_line = match sbb.next().ok_or(None)? {
+            Ok(bytes) => bytes,
+            Err(e) => {
                 log::error!("{e}");
-                return Err(server_error::generic());
+                return Err(server_error::generic().into());
             }
-            None => return Err(client_error::bad_request::missing_method()),
         };
 
         let (method, target, http_version) = parse_request_line(request_line)?;
 
         let mut headers = HashMap::new();
         loop {
-            match sbb
-                .next()
-                .expect("TcpStream can't return None unless stream is closed")
-            {
+            match sbb.next().ok_or(None)? {
                 Ok(bytes) if bytes.is_empty() => break, // found \r\n\r\n (marking end of headers)
                 Ok(bytes) => {
                     let Header { key, value } = Header::try_from(bytes)?;
@@ -174,7 +170,7 @@ impl RequestSource for TcpStream {
                 }
                 Err(io_error) => {
                     log::error!("System error: {io_error}");
-                    return Err(server_error::generic());
+                    return Err(server_error::generic().into());
                 }
             }
         }
@@ -190,7 +186,7 @@ impl RequestSource for TcpStream {
                         key: "Content-Length".to_string(),
                     })?;
                 let mut vec = vec![0; count];
-                buf.read_exact(&mut vec)?;
+                buf.read_exact(&mut vec).map_err(|_| None)?;
                 vec.into_boxed_slice()
             }
         };

@@ -218,27 +218,6 @@ pub mod server_error {
 pub mod client_error {
     use crate::http::response::{Response, ResponseStatus};
 
-    pub mod bad_request {
-        use crate::http::response::{Response, ResponseStatus};
-
-        fn generic() -> Response {
-            Response {
-                status: ResponseStatus::BadRequest,
-                ..Default::default()
-            }
-        }
-
-        fn with_cause(cause: &'static str) -> Response {
-            let mut response = generic();
-            response.dyn_headers.insert("Cause".into(), cause.into());
-            response
-        }
-
-        pub fn missing_method() -> Response {
-            with_cause("Missing method")
-        }
-    }
-
     pub fn not_found() -> Response {
         Response {
             status: ResponseStatus::NotFound,

@@ -23,7 +23,7 @@ pub enum BadRequest {
     #[error("Malformed header. Recquires delimiting ': '")]
     MalformedHeader,
     #[error("value of header {key:?} is malformed")]
-    HeaderValueParseError {key: String },
+    HeaderValueParseError { key: String },
     #[error("missing a target")]
     MissingTarget,
 }
@@ -47,5 +47,11 @@ impl From<io::Error> for Response {
             EK::NotFound | EK::PermissionDenied | EK::IsADirectory => client_error::not_found(),
             _ => server_error::generic(),
         }
+    }
+}
+
+impl From<BadRequest> for Option<Response> {
+    fn from(value: BadRequest) -> Self {
+        Some(value.into())
     }
 }

@@ -60,7 +60,8 @@ fn handle_connection(mut stream: TcpStream) {
     loop {
         let response = match stream.read_request() {
             Ok(request) => request.handle(),
-            Err(err) => err,
+            Err(Some(err_response)) => err_response,
+            Err(None) => break, // Stream has been closed
         };
 
         match stream.respond(response) {
